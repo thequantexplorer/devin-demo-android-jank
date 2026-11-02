@@ -30,7 +30,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
@@ -39,13 +42,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
@@ -57,9 +60,16 @@ fun FeedScreen(viewModel: FeedViewModel) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    val scrollOffset = listState.firstVisibleItemScrollOffset
-    val scrolled = listState.firstVisibleItemIndex > 0 || scrollOffset > 0
-    val showBackToTop = listState.firstVisibleItemIndex > 3
+    val scrolled by remember {
+        derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
+    }
+    val showBackToTop by remember { derivedStateOf { listState.firstVisibleItemIndex > 3 } }
+
+    val context = LocalContext.current
+    val photoWidth = context.resources.displayMetrics.widthPixels
+    LaunchedEffect(feed.isEmpty()) {
+        feed.map { it.photo }.distinct().forEach { PhotoDecoder.load(context, it, photoWidth) }
+    }
 
     Scaffold(
         modifier = Modifier.semantics { testTagsAsResourceId = true },
@@ -88,10 +98,11 @@ fun FeedScreen(viewModel: FeedViewModel) {
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            items(feed, key = { it.hashCode() }) { item ->
+            items(feed, key = { it.id }) { item ->
                 PostCard(
                     item = item,
-                    parallax = scrollOffset,
+                    photoWidth = photoWidth,
+                    parallax = { listState.firstVisibleItemScrollOffset },
                     onLike = { viewModel.toggleLike(item.id) },
                 )
             }
@@ -100,10 +111,12 @@ fun FeedScreen(viewModel: FeedViewModel) {
 }
 
 @Composable
-fun PostCard(item: FeedItem, parallax: Int, onLike: () -> Unit) {
+fun PostCard(item: FeedItem, photoWidth: Int, parallax: () -> Int, onLike: () -> Unit) {
     val context = LocalContext.current
-    val bitmap = remember(item) { PhotoDecoder.decode(context, item.photo) }
-    val background = PhotoDecoder.averageColor(bitmap)
+    val photo by produceState(PhotoDecoder.cached(item.photo), item.photo, photoWidth) {
+        if (value == null) value = PhotoDecoder.load(context, item.photo, photoWidth)
+    }
+    val background = photo?.averageColor ?: PhotoPlaceholder
 
     Card(
         modifier = Modifier
@@ -139,14 +152,16 @@ fun PostCard(item: FeedItem, parallax: Int, onLike: () -> Unit) {
                 .clip(RectangleShape)
                 .background(background),
         ) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = item.caption,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .offset(y = (-(parallax % 400) / 40).dp),
-            )
+            photo?.let {
+                Image(
+                    bitmap = it.bitmap,
+                    contentDescription = item.caption,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .offset { IntOffset(0, (-(parallax() % 400) / 40).dp.roundToPx()) },
+                )
+            }
         }
         Column(modifier = Modifier.padding(12.dp)) {
             Text(item.caption)
@@ -165,3 +180,5 @@ fun PostCard(item: FeedItem, parallax: Int, onLike: () -> Unit) {
         }
     }
 }
+
+private val PhotoPlaceholder = Color(0xFFE8EAED)
